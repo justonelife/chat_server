@@ -26,6 +26,7 @@ app.post('/login', (req, res) => {
 
     try {
         var user_id = undefined;
+        var room_id = undefined;
 
 
         MongoClient.connect(DATABASE_URL, MONGO_OPTIONS, (err, db) => {
@@ -56,6 +57,18 @@ app.post('/login', (req, res) => {
                 });
             };
 
+            var channelsPromise = () => {
+                return new Promise((resolve, reject) => {
+                    dbo.collection('channels')
+                       .find({ room_id: mongo.ObjectId(room_id) })
+                       .toArray((err, result) => {
+                           err
+                                ? reject(err)
+                                : resolve(result);
+                       });
+                });
+            };
+
 
             var callAllPromises = async () => {
                 var result = {};
@@ -68,19 +81,38 @@ app.post('/login', (req, res) => {
                     var roomsResult = await roomsPromise();
 
                     var tempRoom = [];
+                    var tempChannel = [];
 
                     if (roomsResult) {
-                        roomsResult.forEach(val => tempRoom.push({
-                            name: val.name,
-                            channels: val.channels
-                        }));
+                        for (let i = 0; i < roomsResult.length; i++) {  //format room data
+                            tempRoom.push({
+                                name: roomsResult[i].name,
+                                channels: roomsResult[i].channels
+                            });
+
+                            room_id = roomsResult[i]._id;
+
+                            var channelsResult = await channelsPromise();
+                            
+                            for (let j = 0; j < channelsResult.length; j++) {   //format channel data
+                                tempChannel.push({
+                                    _id: channelsResult[j]._id,
+                                    name: channelsResult[j].name,
+                                    members: channelsResult[j].members,
+                                    messages: channelsResult[j].messages
+                                });
+                            }
+
+                        }
                     }
+
                 
                     result = {
                         allowLogin: true,
                         nickname: userResult.nickname,
                         avatar_url: userResult.avatar_url,
-                        rooms: tempRoom
+                        rooms: tempRoom,
+                        channels: tempChannel
                     }
                 } else {
                     result = {
@@ -107,6 +139,12 @@ app.post('/login', (req, res) => {
 
 io.on('connection', (socket) => {
     console.log(socket.id);
+    socket.on('disconnect', function() {
+        console.log(`${socket.id} has left`);
+    });
+    socket.on('user_disconnect', function() {
+        socket.disconnect();
+    });
 });
 
 
