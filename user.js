@@ -17,6 +17,10 @@ const getUserRoom = (sid) => {
     if (index !== -1) {
         return users[index].room;
     }
+    return null;
+}
+const getUsersVariable = () => {
+    return users;
 }
 
-module.exports = { addUser, removeUser, getUserRoom };
+module.exports = { addUser, removeUser, getUserRoom, getUsersVariable };

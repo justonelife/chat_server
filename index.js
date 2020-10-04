@@ -7,11 +7,13 @@ var cors = require('cors');
 var mongo = require('mongodb');
 var MongoClient = mongo.MongoClient;
 const { addUser, removeUser, getUserRoom } = require('./user');
+const { addTypingMem, removeTypingMem, listSocketIdForTyping, listSocketIdGreenLight } = require('./typing');
 const multer = require('multer');
 const GridFsStorage = require('multer-gridfs-storage');
 const mongoose = require('mongoose');
 const crypto = require('crypto');
 const path = require('path');
+const bcrypt = require('bcrypt');
 
 
 //@desc mongo config
@@ -119,9 +121,6 @@ app.post("/avatars/del/:id", (req, res) => {
 app.post('/login', (req, res) => {
 
     try {
-        var user_id = undefined;
-        var room_id = undefined;
-
 
         MongoClient.connect(DATABASE_URL, MONGO_OPTIONS, (err, db) => {
             if (err) throw err;
@@ -130,32 +129,35 @@ app.post('/login', (req, res) => {
             var usersPromise = () => {
                 return new Promise((resolve, reject) => {
                     dbo.collection('users')
-                        .find({ username: req.body.username, password: req.body.password })
-                        .limit(1)
-                        .toArray((err, result) => {
-                            if (err) reject(err);
-                            resolve(result[0]);
-                        });
+                        .findOne({ username: req.body.username }, (err, result) => {
+                            err 
+                                ? reject(err)
+                                : resolve(result);
+                        })
                 });
             };
 
             var callAllPromises = async () => {
-                var result = {};
 
                 var userResult = await usersPromise();
 
-                if (userResult) {
-                    result = {
+                if (!userResult) 
+                    return {
+                        allowLogin: false,
+                        err: 'not exist'
+                    };
+                
+                if (await bcrypt.compare(req.body.password, userResult.password))
+                    return {
                         allowLogin: true,
                         user_id: userResult._id
                     }
-                } else {
-                    result = {
-                        allowLogin: false
-                    }
+                
+                return {
+                    allowLogin: false,
+                    err: 'wrong password'
                 }
 
-                return result;
             }
 
             callAllPromises().then((result) => {
@@ -263,7 +265,7 @@ app.post('/channels', (req, res) => {
 
             callAllPromises().then((result) => {
                 db.close();
-                res.json(result);
+                res.json(result).end();
             });
         });
     } catch (err) {
@@ -272,13 +274,120 @@ app.post('/channels', (req, res) => {
 });
 
 
+//@route POST /modify/name
+//@desc receive new name and save to database
+app.post('/modify/name', (req, res) => {
+    var _id = req.body.user_id;
+    if (_id.length !== 12 && _id.length !== 24) {
+        res.json({err: 'Invalid id'}).end();
+        return;
+    }
+    var newName = req.body.name;
+    MongoClient.connect(DATABASE_URL, MONGO_OPTIONS, (err, db) => {
+        if (err) throw err;
+        var dbo = db.db(db_name);
+        var query = {_id: mongo.ObjectId(_id)};
+        var newValue = {$set: {nickname: newName}};
+        var userPromise = () => {
+            return new Promise((resolve, reject) => {
+                dbo.collection('users')
+                    .updateOne(query, newValue, (err, result) => {
+                        err 
+                            ? reject(err)
+                            : resolve(result);
+                    });
+            });
+        };
+
+        var callAllPromises = async () => {
+            var result = await userPromise();
+            return result;
+        };
+
+        callAllPromises()
+            .then((result) => {
+            db.close();
+            res.json({status: result}).end();    
+            })
+            .catch(err => res.json(err).end());  
+    });
+});
+
+app.post('/modify/password', async (req, res) => {
+    try {
+        var _id = req.body.user_id;
+        if (_id.length !== 12 && _id.length !== 24) {
+            res.json({err: 'Invalid id'}).end();
+            return;
+        }
+        var hashPassword = await bcrypt.hash(req.body.password, 10);
+
+        MongoClient.connect(DATABASE_URL, MONGO_OPTIONS, (err, db) => {
+            if (err) throw err;
+            var dbo = db.db(db_name);
+            var query = {_id: mongo.ObjectId(_id)};
+            var newValue = {$set: {password: hashPassword}};
+            var userPromiseFind = () => {
+                return new Promise((resolve, reject) => {
+                    dbo.collection('users')
+                        .findOne(query, (err, result) => {
+                            err 
+                                ? reject(err)
+                                : resolve(result);
+                        });
+                });
+            }
+            var userPromiseUpdate = () => {
+                return new Promise((resolve, reject) => {
+                    dbo.collection('users')
+                        .updateOne(query, newValue, (err, result) => {
+                            err 
+                                ? reject(err)
+                                : resolve(result);
+                        });
+                });
+            };
+
+            var callAllPromises = async () => {
+                var result = 'current password wrong';
+                //@desc for confirm current password user type in match password in database
+                var userFind = await userPromiseFind();
+                if (userFind && await bcrypt.compare(req.body.currentPassword, userFind.password)) {
+
+                    result = await userPromiseUpdate();
+                }
+                return result;
+            };
+
+            callAllPromises()
+                .then((result) => {
+                db.close();
+                res.json({status: result}).end();    
+                })
+                .catch(err => res.json(err).end());  
+        });
+    } catch(e) {
+        res.send(e);
+    }
+});
+
 
 //@desc socket io 
 io.on('connection', (socket) => {
     console.log(socket.id);
     const sid = socket.id;
     socket.on('disconnect', () => {
-        removeUser(sid);
+        // removeUser(sid);
+        //@temp
+
+        var userRemove = removeUser(sid);
+        // console.log(userRemove);
+        //@desc for pop out name on client
+        if (userRemove) {
+            var usersSocketIdList = listSocketIdForTyping(userRemove.id, userRemove.room);
+            usersSocketIdList.forEach(val => io.to(val).emit('end typing', userRemove.name));
+        }
+
         console.log(`${sid} has left`);
     });
     socket.on('user_disconnect', () => {
@@ -314,9 +423,34 @@ io.on('connection', (socket) => {
     });
 
     //@desc handle user typing, notify to other users
-    socket.on('typing', (nickname, room) => {
-        socket.to(room).emit('typing', nickname);
+    socket.on('typing', (nickname, _id, room_id) => {
+        const addResult = addTypingMem(_id, room_id);
+        //@act already exist
+        if (!addResult.err) {
+
+            //@desc send typing notify to others user except itself (include same user, multi windows)
+            var usersSocketIdList = listSocketIdForTyping(_id, room_id);
+            usersSocketIdList.forEach(val => io.to(val).emit('typing', nickname));
+            // socket.to(room_id).emit('typing', nickname);
+        }
+
+        
     });
+    //@desc handle user end typing, notify to other users
+    socket.on('end typing', (nickname, _id, room_id) => {
+        const removeResult = removeTypingMem(_id, room_id);
+        //@act exist for remove
+        if (!removeResult.err) {
+
+            //@desc enable typing emit for same user
+            var userSocketIdList = listSocketIdGreenLight(_id, room_id);
+            userSocketIdList.forEach(val => io.to(val).emit('green light typing'));
+
+            //@desc for pop out name on client
+            var usersSocketIdList = listSocketIdForTyping(_id, room_id);
+            usersSocketIdList.forEach(val => io.to(val).emit('end typing', nickname));
+        }
+    })
 
     //@desc handle user changed avatar, notify to other users to sync avatar display
     socket.on('notify avatar changed', (roomsList, id) => {
