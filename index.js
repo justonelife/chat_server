@@ -249,8 +249,7 @@ app.post('/channels', (req, res) => {
             var channelsPromise = () => {
                 return new Promise((resolve, reject) => {
                     dbo.collection('channels')
-                        .find({ _id: mongo.ObjectId(channel_id) })
-                        .toArray((err, result) => {
+                        .findOne({ _id: mongo.ObjectId(channel_id) }, (err, result) => {
                             err
                                 ? reject(err)
                                 : resolve(result);
@@ -258,9 +257,32 @@ app.post('/channels', (req, res) => {
                 });
             };
 
+            var messagesPromise = () => {
+                return new Promise((resolve, reject) => {
+                    dbo.collection('messages')
+                        .find({ channel_id: mongo.ObjectId(channel_id) })
+                        .sort({ _id: -1 })
+                        .limit(50)
+                        .toArray((err, result) => {
+                            err 
+                                ? reject(err)
+                                : resolve(result.reverse());
+                        });
+                });
+            };
+
             var callAllPromises = async () => {
                 var channelsResult = await channelsPromise();
-                return channelsResult[0];
+                var messagesResult = await messagesPromise();
+                // console.log(messagesResult);
+                // return channelsResult;
+                return {
+                    _id: channelsResult._id,
+                    room_id: channelsResult.room_id,
+                    name: channelsResult.name,
+                    members: channelsResult.members,
+                    messages: messagesResult
+                }
             };
 
             callAllPromises().then((result) => {
@@ -313,6 +335,9 @@ app.post('/modify/name', (req, res) => {
     });
 });
 
+//@route POST /modify/password
+//@desc receive {user given currentPassword, newPassword}
+//      check if currentPassword match password in database ? save newPassword : decline
 app.post('/modify/password', async (req, res) => {
     try {
         var _id = req.body.user_id;
@@ -412,13 +437,23 @@ io.on('connection', (socket) => {
         let _id = mongo.ObjectId();
         io.to(room).emit('message', _id, user_id, text, send_date);
 
-        // MongoClient.connect(DATABASE_URL, MONGO_OPTIONS, (err, db) => {
-        //     if (err) throw err;
-        //     var dbo = db.db(db_name);
-        //     dbo.collection('channels').updateOne({ _id: mongo.ObjectId(room) }, {
-
-        //     })
-        // })
+        MongoClient.connect(DATABASE_URL, MONGO_OPTIONS, (err, db) => {
+            if (err) throw err;
+            var dbo = db.db(db_name);
+            var newMessage = { 
+                _id: _id,
+                user_id: mongo.ObjectId(user_id), 
+                channel_id: mongo.ObjectId(room), 
+                text: text, 
+                send_date: send_date 
+            };
+            dbo.collection('messages')
+                .insertOne( newMessage, (err, result) => {
+                    err 
+                        ? console.log(err)
+                        : console.log(result);
+                });
+        });
 
     });
 
